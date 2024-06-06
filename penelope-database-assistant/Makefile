@@ -18,8 +18,6 @@ requirements:
 	$(PYTHON_INTERPRETER) -m pip install -r requirements.txt
 	
 
-
-
 ## Delete all compiled Python files
 .PHONY: clean
 clean:
@@ -39,15 +37,21 @@ format:
 	black --config pyproject.toml penelope_database_assistant
 
 
+# ## Set up python interpreter environment
+# .PHONY: create_environment
+# create_environment:
+# 	@bash -c "if [ ! -z `which virtualenvwrapper.sh` ]; then source `which virtualenvwrapper.sh`; mkvirtualenv $(PROJECT_NAME) --python=$(PYTHON_INTERPRETER); else mkvirtualenv.bat $(PROJECT_NAME) --python=$(PYTHON_INTERPRETER); fi"
+# 	@echo ">>> New virtualenv created. Activate with:\nworkon $(PROJECT_NAME)"
 
 
 ## Set up python interpreter environment
 .PHONY: create_environment
 create_environment:
-	@bash -c "if [ ! -z `which virtualenvwrapper.sh` ]; then source `which virtualenvwrapper.sh`; mkvirtualenv $(PROJECT_NAME) --python=$(PYTHON_INTERPRETER); else mkvirtualenv.bat $(PROJECT_NAME) --python=$(PYTHON_INTERPRETER); fi"
-	@echo ">>> New virtualenv created. Activate with:\nworkon $(PROJECT_NAME)"
-	
-
+	$(PYTHON_INTERPRETER) -m venv virtualenv
+	@echo ">>> New virtualenv created."
+	@echo ">>> Activate virtual environment:"
+	@echo "    For macOS/Linux: source virtualenv/bin/activate"
+	@echo "    For Windows: .\virtualenv\Scripts\activate"
 
 
 #################################################################################

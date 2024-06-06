@@ -5,6 +5,7 @@ __pycache__/
 
 # C extensions
 *.so
+penelope-database-assistant/virtualenv/
 
 # Distribution / packaging
 .Python
