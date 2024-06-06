@@ -118,7 +118,7 @@ class CustomAbacusLLM(LLM):
         return "penelope"
 
 
-# ------------------------ TOOLS ------------------------------------------
+# ------------------------ TOOLS LANGCHAIN ------------------------------------------
 
 tavily_search = TavilySearchResults()
 google_search = GoogleSearchAPIWrapper(google_api_key=GOOGLE_API_KEY, google_cse_id=GOOGLE_CSE_ID)
