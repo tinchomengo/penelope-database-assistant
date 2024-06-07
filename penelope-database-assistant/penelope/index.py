@@ -129,6 +129,121 @@ google_search_tool = Tool(
     func=google_search.run,
 )
 
+
+# function to provide a default value for sorting
+def get_token_symbol(item):
+    token_symbol = item.get('tokenSymbol')
+    return token_symbol if token_symbol is not None else ''
+
+@tool
+def get_llama_chains(token_symbol):
+    """
+    Retrieves information about chains from the DefiLlama API and searches for a specific protocol based on its token symbol.
+
+    Parameters:
+    token_symbol (str): The token symbol of the protocol to search for.
+
+    Returns:
+    dict: A dictionary containing information about the protocol if found (including its ID, name, and TVL), or a message indicating the result of the search.
+    """
+
+    url = "https://api.llama.fi/v2/chains"
+    
+    try:
+        formatted_symbol = str(token_symbol).casefold()
+        response = requests.get(url)
+
+        if response.status_code == 200:
+            chains = response.json()
+            sorted_data = sorted(chains, key=get_token_symbol)
+
+            for chain in sorted_data:
+                if formatted_symbol == str(chain['tokenSymbol']).casefold():
+                    return f"current tvl of {chain['name']} is {chain['tvl']}"
+            
+            return "Protocol not found"
+        
+        return 'Unable to fetch the data. Please check the token name and try again.'
+    
+    except requests.RequestException as e:
+        return 'Unable to fetch the data. Please check the token name and try again.'
+    
+    except Exception as e:
+        return 'Unable to fetch the data. Please check the token name and try again.'
+
+
+@tool
+def get_fees_revenue_all_protocols(token_name):
+    """
+    Retrieves fees and revenue data for all protocols from the DefiLlama API for a specified token.
+
+    Parameters:
+    token_name (str): The name of the token for which fees and revenue data is requested.
+
+    Returns:
+    dict or str: A dictionary containing the fees and revenue data if the request is successful,
+                 or an error message if the request fails.
+
+    The function makes a GET request to the DefiLlama API to fetch daily fees and revenue data for the specified token.
+    It extracts and returns the relevant data in a structured dictionary format if the request is successful.
+    """
+    
+    url = f"https://api.llama.fi/overview/fees/{token_name}?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true&dataType=dailyFees"
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            protocols_data = {
+                'chain': data.get('chain', None),
+                'dailyRevenue': data.get('dailyRevenue', None),
+                'dailyUserFees': data.get('dailyUserFees', None),
+                'dailyHoldersRevenue': data.get('dailyHoldersRevenue', None),
+                'dailyProtocolRevenue': data.get('dailyProtocolRevenue', None),
+            }
+            return protocols_data
+        else:
+            return 'Unable to fetch the data. Please check the token name and try again.'
+    except Exception as e:
+        return 'Unable to fetch the data. Please check the token name and try again.'
+
+@tool
+def get_latest_bitcoin_news(token_name):
+    """
+    Retrieves articles related to the specified token from a given API endpoint and returns the content of each article.
+
+    Parameters:
+    token_name (str): The name of the token for which to retrieve articles. Expected to be "bitcoin" for bot_id 1.
+
+    Returns:
+    list of str: A list containing the content of each article retrieved from the API.
+    """
+    
+    # Define the bot_id for Bitcoin
+    bot_id = 1
+    limit = 10
+    
+    # Construct the URL for the API request
+    url = f"https://zztc5v98-5001.uks1.devtunnels.ms/get_articles?bot_id={bot_id}&limit={limit}"
+    
+    try:
+        # Make the API request
+        response = requests.get(url)
+        
+        # Check if the request was successful
+        if response.status_code == 200:
+            data = response.json().get('data', [])
+            
+            # Extract the content from each article
+            articles_content = [article['content'] for article in data]
+            
+            return articles_content
+        else:
+            return f"Unable to fetch the data. HTTP Status Code: {response.status_code}"
+    
+    except Exception as e:
+        return f"An error occurred: {str(e)}. Please try again later."
+    
+
 @tool
 def get_token_data(coin):
     """
@@ -311,16 +426,14 @@ def exponentiate(base: int, exponent: int) -> int:
 
 # ------------------------------ Perplexity ----------------------------------------
 
-def perplexity_api_request(content, prompt=None, model='llama-3-sonar-large-32k-online'):
+def perplexity_api_request(question, content, prompt=None, model='llama-3-sonar-large-32k-online'):
     
     url = "https://api.perplexity.ai/chat/completions"
     prompt = prompt if prompt else """
-    create a nice and well structure response easly understandable by humans, 
-    add words if necessary to give an answer to the user, so user think is a chat with an ai agent called penelope
+    you are an AI Asistant, called Penelope, you are very polite and smart, an expert in creating analysis, writing summaries.
                                     """
     
-    content = f""""Take the following text, this can be a dict or an string and create a nice and well structure response easly understandable by humans, 
-    add any words if necessary to give an answer to the user: {content}"""
+    content = f""""Narrate and create a response for this question or prompt {question} taking into account the following text: {content}, if this {content} seems to be null or none or seems like an error, create a nice error message. Create a nice and well structure response."""
 
     payload = {
         "model": model,
@@ -353,14 +466,14 @@ def perplexity_api_request(content, prompt=None, model='llama-3-sonar-large-32k-
             answer_content = assistant_message.get('content', None)
             
             if answer_content:
-                return {'response': answer_content, 'success': True}
+                return answer_content
             else:
-                return {'response': f"No answer found for this prompt: {prompt}. Error: {assistant_message}", 'success': False}
+                return "Apologies, it seems to be a problem, please try again"
         else:
-            return {'response': f"No choices found for this prompt: {prompt}, Error: {choices}", 'success': False}
+            return "Apologies, it seems to be a problem, please try again"
     
     except requests.exceptions.RequestException as err:
-        return {'response': f"Error during API request: {err}", 'success': False}
+        return "Apologies, it seems to be a problem, please try again"
 
 
 # ---------------------------- PENELOPE ------------------------------------------
@@ -389,7 +502,9 @@ class Penelope:
         return itemgetter("arguments") | chosen_tool
 
 
-    def call_tools(self, msg: AIMessage) -> List[Dict]:
+    def call_tools(self, msg: AIMessage) -> Runnable:
+        """Simple sequential tool calling helper."""
+        print('msg: ', msg)
         tool_calls = msg.tool_calls.copy()
         for tool_call in tool_calls:
             tool_call["output"] = self.tool_map[tool_call["name"]].invoke(tool_call["args"])
@@ -398,16 +513,16 @@ class Penelope:
     def process_input(self, input: str) -> Any:
         # Chain the prompt through LLM and tool invocation
         # chain = prompt | penelope | JsonOutputParser() | RunnablePassthrough.assign(output=self.tool_chain) 
-        chain = self.prompt_template | self.penelope | JsonOutputParser() | RunnablePassthrough.assign(output=self.tool_chain) 
+        chain = self.prompt_template | self.penelope | JsonOutputParser() | self.tool_chain
         # Invoke the chain with the user input and return the result
         result = chain.invoke({"input": input})
-        final_response = perplexity_api_request(content=str(result))
+        final_response = perplexity_api_request(content=str(result), question=input)
         return final_response
 
 
 
 # Example usage:
-tools = [multiply, add, exponentiate, get_token_data]
+tools = [multiply, add, exponentiate, get_token_data, get_llama_chains, get_latest_bitcoin_news]
 ABACUS_API_KEY = ABACUS_API_KEY
 ABACUS_MODEL_TOKEN = ABACUS_MODEL_TOKEN
 DEPLOYMENT_ID = DEPLOYMENT_ID 
