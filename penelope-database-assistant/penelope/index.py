@@ -28,6 +28,7 @@ dotenv.load_dotenv()
 ABACUS_API_KEY = os.getenv('ABACUS_API_KEY')
 ABACUS_MODEL_TOKEN = os.getenv('ABACUS_MODEL_TOKEN')
 DEPLOYMENT_ID = '1209bcfb2c'
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
@@ -118,7 +119,7 @@ class CustomAbacusLLM(LLM):
         return "penelope"
 
 
-# ------------------------ TOOLS ------------------------------------------
+# ------------------------ TOOLS LANGCHAIN ------------------------------------------
 
 tavily_search = TavilySearchResults()
 google_search = GoogleSearchAPIWrapper(google_api_key=GOOGLE_API_KEY, google_cse_id=GOOGLE_CSE_ID)
@@ -518,8 +519,16 @@ class Penelope:
         result = chain.invoke({"input": input})
         final_response = perplexity_api_request(content=str(result), question=input)
         return final_response
+    
 
 
+def extract_and_format_response(data):
+    if isinstance(data, dict) and 'response' in data:
+        response_content = data['response']
+        formatted_content = response_content.replace('\\n', '\n')
+        return formatted_content
+    else:
+        return "Invalid input or 'response' field not found."
 
 # Example usage:
 tools = [multiply, add, exponentiate, get_token_data, get_llama_chains, get_latest_bitcoin_news]
@@ -537,96 +546,11 @@ def main():
         output = CUSTOM_LLM.process_input(user_input)
         print(output)
 
+        # Martin, check now the output before using the following code, 
+        # I have improved the response of the tools, to not return dicts, but strings now.
+        
+        # formatted_output = extract_and_format_response(output)
+        # print("Formatted response: ",formatted_output)
+
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# input =  "what is the current market cap of ripple"
-# output = CUSTOM_LLM.process_input(input)
-# print(output['response'])
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# def tool_chain(model_output):
-#     print('model_output: ', model_output)
-#     tool_map = {tool.name: tool for tool in tools}
-#     chosen_tool = tool_map[model_output["name"]]
-#     return itemgetter("arguments") | chosen_tool
-
-
-# def call_tools(msg: AIMessage) -> Runnable:
-#     """Simple sequential tool calling helper."""
-#     tool_map = {tool.name: tool for tool in tools}
-#     tool_calls = msg.tool_calls.copy()
-#     for tool_call in tool_calls:
-#         tool_call["output"] = tool_map[tool_call["name"]].invoke(tool_call["args"])
-#     return tool_calls
-
-
-# # Initialize the API client and LLM
-# abacus_client = AbacusAIClient(
-#     api_key=ABACUS_API_KEY,
-#     deployment_token=ABACUS_MODEL_TOKEN,
-#     deployment_id=DEPLOYMENT_ID
-# )
-
-# # Initialize the custom LLM
-# penelope = CustomAbacusLLM(abacus_client)
-
-# rendered_tools = render_text_description(tools)
-# system_prompt = f"""You are an assistant that has access to the following set of tools. Here are the names and descriptions for each tool:
-
-# {rendered_tools}
-
-# Given the user input, return the name and input of the tool to use. Return your response as a JSON blob with 'name' and 'arguments' keys."""
-
-# prompt = ChatPromptTemplate.from_messages(
-#     [("system", system_prompt), ("user", "{input}")]
-# )
-
-# chain = prompt | penelope | JsonOutputParser() | RunnablePassthrough.assign(output=tool_chain) 
-# print(chain.invoke({"input": "what is eth"}))
-
-
