@@ -1,28 +1,43 @@
 from typing import Optional, List, Dict, Any
+from flask import Flask, request, jsonify
 from langchain_core.tools import tool, Tool
 from datetime import timedelta, datetime
 from langchain.llms.base import LLM
 from operator import itemgetter
 from abacusai import ApiClient
+from flask_cors import CORS
 from pydantic import Field
 import requests
 import dotenv
 import os
+from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_google_community import GoogleSearchAPIWrapper
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain.tools.render import render_text_description
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import (
     Runnable,
     RunnableLambda,
     RunnableMap,
     RunnablePassthrough,
 )
+from langchain_core.prompts.chat import MessagesPlaceholder
+from langchain_postgres import PostgresChatMessageHistory
+import uuid
+import psycopg
+
+
 
 # Load environment variables from a .env file
 dotenv.load_dotenv()
+session_id = str(uuid.uuid4())
+
+# TODO: create a database called chat_history
+conn_info =  "postgresql://postgres:postgres@localhost/chat_history"
+table_name = "chat_history"
+sync_connection = psycopg.connect(conn_info)
 
 # Configuration
 ABACUS_API_KEY = os.getenv('ABACUS_API_KEY')
@@ -69,7 +84,7 @@ class AbacusAIClient:
             )
 
             base_result = response['messages'][1]['text']
-            result_text = f'{base_result}\n\n'
+            result_text = f'{base_result}'
 
             search_results = response['search_results']
             for result in search_results:
@@ -105,6 +120,7 @@ class CustomAbacusLLM(LLM):
         Returns:
         str: The response from the model.
         """
+        # print("Custom_abacus_prompt:", prompt)
         response = self.abacus_client.ask_model(prompt=prompt)
         if response is None:
             raise ValueError("Error in model response")
@@ -434,7 +450,7 @@ def perplexity_api_request(question, content, prompt=None, model='llama-3-sonar-
     you are an AI Asistant, called Penelope, you are very polite and smart, an expert in creating analysis, writing summaries.
                                     """
     
-    content = f""""Narrate and create a response for this question or prompt {question} taking into account the following text: {content}, if this {content} seems to be null or none or seems like an error, create a nice error message. Create a nice and well structure response."""
+    content = f""""create a response for this question or prompt {question} taking into account the following text: {content}, Create a nice and well structure response."""
 
     payload = {
         "model": model,
@@ -480,28 +496,58 @@ def perplexity_api_request(question, content, prompt=None, model='llama-3-sonar-
 # ---------------------------- PENELOPE ------------------------------------------
 
 class Penelope:
-    def __init__(self, api_key: str, deployment_token: str, deployment_id: str, tools: List):
+    def __init__(self, api_key: str, deployment_token: str, deployment_id: str, tools: List, table_name: str, session_id: str, sync_connection):
+        # Initialize the database table
+        cur = sync_connection.cursor()
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE  table_schema = 'public'
+                AND    table_name   = %s
+            );
+        """, (table_name,))
+        table_exists = cur.fetchone()[0]
+
+        if table_exists:
+            print(f"---Table {table_name} already exists---")
+        else:
+            print(f"Table {table_name} does not exist, creating it...")
+            # Create the table schema
+            PostgresChatMessageHistory.create_tables(sync_connection, table_name)
+
+        # Initialize the message history
+        self.history = PostgresChatMessageHistory(
+            table_name,
+            session_id,
+            sync_connection=sync_connection
+        )
+
+        # Initialize the Penelope attributes
         self.abacus_client = AbacusAIClient(
             api_key=api_key,
             deployment_token=deployment_token,
             deployment_id=deployment_id
         )
+        self.chat_history = []
         self.penelope = CustomAbacusLLM(self.abacus_client)
         self.tools = tools
         self.tool_map = {tool.name: tool for tool in tools}
         self.rendered_tools = render_text_description(tools)
         self.system_prompt = f"""You are an assistant that has access to the following set of tools. Here are the names and descriptions for each tool:
                                 {self.rendered_tools}
-                                Given the user input, return the name and input of the tool to use. Return your response as a JSON blob with 'name' and 'arguments' keys."""
+                                Given the user input, return the name and input of the tool to use if any helps. Return your response as a JSON blob with 'name' and 'arguments' keys."""
 
         self.prompt_template = ChatPromptTemplate.from_messages(
-            [("system", self.system_prompt), ("user", "{input}")]
+            [
+                ("system", self.system_prompt),
+                MessagesPlaceholder(variable_name="chat_history"),
+                ("user", "{input}")
+            ]
         )
 
     def tool_chain(self, model_output):
         chosen_tool = self.tool_map[model_output["name"]]
         return itemgetter("arguments") | chosen_tool
-
 
     def call_tools(self, msg: AIMessage) -> Runnable:
         """Simple sequential tool calling helper."""
@@ -511,46 +557,104 @@ class Penelope:
             tool_call["output"] = self.tool_map[tool_call["name"]].invoke(tool_call["args"])
         return tool_calls
 
+    def trim_messages(self, chain_input):
+        stored_messages = self.history.messages
+        print("\nstored_messages: ", stored_messages)
+        if len(stored_messages) <= 2:
+            return RunnablePassthrough()
+
+        self.history.clear()
+
+        for message in stored_messages[-2:]:
+            self.history.add_user_message(message)
+
+        return RunnablePassthrough()
+
     def process_input(self, input: str) -> Any:
-        # Chain the prompt through LLM and tool invocation
-        # chain = prompt | penelope | JsonOutputParser() | RunnablePassthrough.assign(output=self.tool_chain) 
-        chain = self.prompt_template | self.penelope | JsonOutputParser() | self.tool_chain
-        # Invoke the chain with the user input and return the result
-        result = chain.invoke({"input": input})
-        final_response = perplexity_api_request(content=str(result), question=input)
-        return final_response
-    
+        try:  
+            start = datetime.now()
+            print('Start time: ', start)
+            
+            chain = self.prompt_template | self.penelope
 
+            # chain = self.prompt_template | self.penelope | JsonOutputParser() | self.tool_chain
+            chain_with_message_history = RunnableWithMessageHistory(
+                                            chain,
+                                            lambda session_id: self.history,
+                                            input_messages_key="input",
+                                            history_messages_key="chat_history",
+                                        )
 
-def extract_and_format_response(data):
-    if isinstance(data, dict) and 'response' in data:
-        response_content = data['response']
-        formatted_content = response_content.replace('\\n', '\n')
-        return formatted_content
-    else:
-        return "Invalid input or 'response' field not found."
+            chain_with_trimming = (
+                RunnablePassthrough.assign(messages_trimmed=self.trim_messages)
+                | chain_with_message_history
+            )
+
+            result = chain_with_message_history.invoke(
+                {"input": input},
+                {"configurable": {"session_id": uuid.uuid4()}},
+            )
+
+            # print("result: ", result)
+            final_response = perplexity_api_request(content=str(result), question=input)
+
+            # Add messages to the chat history
+            self.history.add_messages([
+                SystemMessage(content=self.system_prompt),
+                AIMessage(content=final_response),
+                HumanMessage(content=input),
+            ])
+
+            end = datetime.now()
+            print('End time: ', end)
+            print('Time spent:', end - start)
+            
+            return {'success': True, 'error': None, 'response': final_response}
+        
+        except Exception as e:
+            return {'success': False, 'error': f'Error processing input: {str(e)}', 'response': None}
+
 
 # Example usage:
-tools = [multiply, add, exponentiate, get_token_data, get_llama_chains, get_latest_bitcoin_news]
+tools = [get_token_data, get_llama_chains, get_latest_bitcoin_news]
 ABACUS_API_KEY = ABACUS_API_KEY
 ABACUS_MODEL_TOKEN = ABACUS_MODEL_TOKEN
 DEPLOYMENT_ID = DEPLOYMENT_ID 
 
-CUSTOM_LLM = Penelope(ABACUS_API_KEY, ABACUS_MODEL_TOKEN, DEPLOYMENT_ID, tools)
+CUSTOM_LLM = Penelope(ABACUS_API_KEY, ABACUS_MODEL_TOKEN, DEPLOYMENT_ID, tools, table_name, session_id, sync_connection)
 
-def main():
-    while True:
-        user_input = input("Enter your query (or press 'q' to quit): ")
-        if user_input.lower() == 'q':
-            break
-        output = CUSTOM_LLM.process_input(user_input)
-        print(output)
+app = Flask(__name__)
+CORS(app)
 
-        # Martin, check now the output before using the following code, 
-        # I have improved the response of the tools, to not return dicts, but strings now.
+@app.route('/process', methods=['POST'])
+def process():
+    try:
+        user_input = request.get_json()
         
-        # formatted_output = extract_and_format_response(output)
-        # print("Formatted response: ",formatted_output)
+        if not user_input:
+            raise ValueError("No JSON data provided")
+        
+        # Assuming CUSTOM_LLM.process_input() returns a dictionary with 'response', 'error', and 'success' keys.
+        output = CUSTOM_LLM.process_input(user_input)
+        
+        if output['success']:
+            response = output['response']
+        else:
+            response = output['error']
+        
+        return jsonify({'response': response, 'success': output['success']})
+    
+    except ValueError as ve:
+        return jsonify({'response': f"ValueError: {str(ve)}", 'success': False})
+    
+    except Exception as e:
+        return jsonify({'response': f"Exception: {str(e)}", 'success': False})
+
+
+@app.route('/')
+def home():
+    return "Penelope API is running"
 
 if __name__ == "__main__":
-    main()
+    app.run(host='0.0.0.0', port=5000, use_reloader=True)
+
